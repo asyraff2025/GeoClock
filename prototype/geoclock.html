@@ -1,0 +1,139 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>GeoClock – attendance prototype</title>
+<style>
+:root{box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px);
+--bg:#f6f7f9;--card:#fff;--tx:#14181f;--mut:#667085;--bd:#e3e6eb;--pri:#0f766e;--prit:#fff;--ok:#15803d;--warn:#b45309;--bad:#b91c1c}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){color-scheme:dark;--bg:#0f1318;--card:#171c23;--tx:#eceff4;--mut:#98a2b3;--bd:#2a313b;--pri:#2dd4bf;--prit:#04201c;--ok:#4ade80;--warn:#fbbf24;--bad:#f87171}}
+:root[data-theme="dark"]{color-scheme:dark;--bg:#0f1318;--card:#171c23;--tx:#eceff4;--mut:#98a2b3;--bd:#2a313b;--pri:#2dd4bf;--prit:#04201c;--ok:#4ade80;--warn:#fbbf24;--bad:#f87171}
+html{scroll-padding-top:env(safe-area-inset-top,0px)}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--tx);font:15px/1.45 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+.wrap{max-width:720px;margin:0 auto;padding:16px}
+h1{font-size:18px;margin:0}h2{font-size:15px;margin:0 0 10px}
+.top{display:flex;justify-content:space-between;align-items:center;margin-bottom:12px}
+.tabs{display:flex;gap:6px;background:var(--card);border:1px solid var(--bd);border-radius:10px;padding:4px}
+.tabs button{border:0;background:none;color:var(--mut);padding:6px 12px;border-radius:7px;font:inherit;cursor:pointer}
+.tabs button.on{background:var(--pri);color:var(--prit)}
+.card{background:var(--card);border:1px solid var(--bd);border-radius:12px;padding:14px;margin-bottom:12px}
+.row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+.sp{justify-content:space-between}
+button.b{border:1px solid var(--bd);background:var(--card);color:var(--tx);padding:9px 14px;border-radius:9px;font:inherit;cursor:pointer}
+button.p{background:var(--pri);color:var(--prit);border-color:var(--pri);font-weight:600}
+button.big{width:100%;padding:16px;font-size:17px}
+button:disabled{opacity:.45;cursor:not-allowed}
+.mut{color:var(--mut);font-size:13px}
+.pill{display:inline-block;padding:2px 9px;border-radius:99px;font-size:12px;border:1px solid var(--bd)}
+.ok{color:var(--ok)}.warn{color:var(--warn)}.bad{color:var(--bad)}
+table{width:100%;border-collapse:collapse;font-size:14px}
+th,td{text-align:left;padding:7px 6px;border-bottom:1px solid var(--bd);white-space:nowrap}
+.sc{overflow-x:auto}
+input,select,textarea{font:inherit;color:var(--tx);background:var(--bg);border:1px solid var(--bd);border-radius:8px;padding:8px;width:100%}
+.msg{padding:10px;border-radius:9px;margin-top:10px;font-size:14px;border:1px solid var(--bd)}
+.thumb{width:44px;height:44px;border-radius:8px;object-fit:cover;border:1px solid var(--bd)}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="top"><h1>GeoClock</h1>
+    <div class="tabs"><button id="t-w" class="on" onclick="tab('w')">Worker</button><button id="t-a" onclick="tab('a')">Admin</button></div></div>
+  <div id="w"></div><div id="a" hidden></div>
+</div>
+<script>
+const SITE={name:"Klang Depot",lat:3.0449,lng:101.4455,r:150};
+const SHIFT={start:"08:00",end:"17:00",grace:10};
+const ME="Aiman";
+const $=id=>document.getElementById(id);
+const pad=n=>String(n).padStart(2,"0");
+const hm=d=>pad(d.getHours())+":"+pad(d.getMinutes());
+const today=()=>new Date().toISOString().slice(0,10);
+function dist(a,b){const R=6371000,t=x=>x*Math.PI/180,dl=t(b.lat-a.lat),dn=t(b.lng-a.lng);
+ const h=Math.sin(dl/2)**2+Math.cos(t(a.lat))*Math.cos(t(b.lat))*Math.sin(dn/2)**2;return Math.round(2*R*Math.asin(Math.sqrt(h)))}
+function mins(s){const[a,b]=s.split(":").map(Number);return a*60+b}
+// state (in memory only)
+let S={pos:null,mode:null,selfie:null,msg:null,cur:null,onBreak:null,
+ records:[
+  {id:1,w:"Aiman",d:"2026-10-28",in:"08:04",out:null,brk:0,flags:[]},
+  {id:2,w:"Siti",d:"2026-10-28",in:"07:58",out:"17:03",brk:60,flags:[]},
+  {id:3,w:"Raju",d:"2026-10-28",in:"08:22",out:"17:10",brk:45,flags:["Late"]}],
+ live:[{w:"Siti",st:"On site",since:"07:55"},{w:"Raju",st:"On break",since:"12:40"}],
+ attempts:[],corr:[],audit:[]};
+function tab(x){$("w").hidden=x!=="w";$("a").hidden=x!=="a";$("t-w").className=x==="w"?"on":"";$("t-a").className=x==="a"?"on":"";draw()}
+function setPos(kind){
+ if(kind==="site"){S.pos={lat:SITE.lat+0.0003,lng:SITE.lng+0.0004};S.mode="Simulated: at site"}
+ else if(kind==="far"){S.pos={lat:SITE.lat+0.005,lng:SITE.lng+0.004};S.mode="Simulated: away from site"}
+ else{ if(!navigator.geolocation){S.msg=["bad","GPS not available here."];draw();return}
+  navigator.geolocation.getCurrentPosition(p=>{S.pos={lat:p.coords.latitude,lng:p.coords.longitude};S.mode="Real GPS (±"+Math.round(p.coords.accuracy)+" m)";draw()},
+  ()=>{S.msg=["bad","Couldn’t read GPS. Use a simulated location."];draw()});return}
+ S.msg=null;draw()}
+function pickSelfie(e){const f=e.target.files[0];if(f){S.selfie=URL.createObjectURL(f);draw()}}
+function flagsFor(t){const f=[];if(mins(t)>mins(SHIFT.start)+SHIFT.grace)f.push("Late");return f}
+function clockIn(){
+ const d=dist(S.pos,SITE);
+ if(d>SITE.r){S.attempts.push({w:ME,t:hm(new Date()),d,k:"Clock in outside zone"});S.msg=["bad","You’re "+d+" m from "+SITE.name+". Move inside the zone to clock in."];draw();return}
+ const t=hm(new Date());
+ S.cur={id:Date.now(),w:ME,d:today(),in:t,out:null,brk:0,flags:flagsFor(t),selfie:S.selfie};
+ S.selfie=null;S.msg=["ok","Clocked in at "+t+"."];draw()}
+function clockOut(){
+ const d=dist(S.pos,SITE);
+ if(d>SITE.r){S.attempts.push({w:ME,t:hm(new Date()),d,k:"Clock out outside zone"});S.msg=["bad","You’re "+d+" m outside the zone. Clock out is blocked. Use a correction request if this is wrong."];draw();return}
+ const t=hm(new Date());
+ if(mins(t)<mins(SHIFT.end)-5)S.cur.flags.push("Early leave");
+ S.cur.out=t;S.records.unshift(S.cur);S.cur=null;S.msg=["ok","Clocked out at "+t+"."];draw()}
+function brk(){
+ if(S.onBreak){S.cur.brk+=Math.max(1,Math.round((Date.now()-S.onBreak)/60000));S.onBreak=null;S.msg=["ok","Break ended."]}
+ else{S.onBreak=Date.now();S.msg=["ok","Break started."]}draw()}
+function sendCorr(){
+ const t=$("ct").value,r=$("cr").value.trim();
+ if(!t||!r){S.msg=["bad","Add the time and a reason."];draw();return}
+ S.corr.push({id:Date.now(),w:ME,recId:1,d:"2026-10-28",t,r,st:"Pending"});S.msg=["ok","Correction sent to your supervisor."];draw()}
+function decide(id,ok){
+ const c=S.corr.find(x=>x.id===id);c.st=ok?"Approved":"Rejected";
+ if(ok){const r=S.records.find(x=>x.id===c.recId);if(r){r.out=c.t;r.flags.push("Corrected")}}
+ S.audit.unshift(hm(new Date())+" · Supervisor "+(ok?"approved":"rejected")+" "+c.w+"’s clock out correction for "+c.d+" ("+c.t+")");draw()}
+function csv(){
+ const rows=[["Worker","Date","In","Out","Break (min)","Flags"]];
+ const all=(S.cur?[S.cur]:[]).concat(S.records);
+ all.forEach(r=>rows.push([r.w,r.d,r.in,r.out||"",r.brk,r.flags.join("; ")]));
+ $("csvbox").value=rows.map(r=>r.join(",")).join("\n");$("csvbox").hidden=false;$("csvbox").select()}
+function draw(){
+ const d=S.pos?dist(S.pos,SITE):null, inside=d!==null&&d<=SITE.r;
+ const st=S.cur?(S.onBreak?"On break":"On site"):"Clocked out";
+ let w=`<div class="card"><div class="row sp"><div><h2>${ME}</h2><div class="mut">Shift ${SHIFT.start}–${SHIFT.end} · ${SITE.name}</div></div>
+ <span class="pill ${S.cur?"ok":""}">${st}</span></div></div>
+ <div class="card"><h2>1. Location</h2>
+ <div class="row"><button class="b" onclick="setPos('gps')">Use my GPS</button><button class="b" onclick="setPos('site')">Simulate: at site</button><button class="b" onclick="setPos('far')">Simulate: away</button></div>
+ <div class="mut" style="margin-top:8px">${S.pos?`${S.mode} · ${d} m from site · <b class="${inside?"ok":"bad"}">${inside?"inside zone":"outside zone"}</b> (radius ${SITE.r} m)`:"No location yet."}</div></div>`;
+ if(!S.cur){w+=`<div class="card"><h2>2. Selfie</h2><div class="row"><input type="file" accept="image/*" capture="user" onchange="pickSelfie(event)" style="flex:1">${S.selfie?`<img class="thumb" src="${S.selfie}" alt="selfie">`:""}</div></div>
+ <button class="b p big" ${S.pos&&S.selfie?"":"disabled"} onclick="clockIn()">Clock in</button>`}
+ else{w+=`<div class="card"><div class="mut">In since ${S.cur.in} · breaks ${S.cur.brk} min ${S.cur.flags.length?"· "+S.cur.flags.join(", "):""}</div></div>
+ <div class="row"><button class="b big" style="flex:1" onclick="brk()">${S.onBreak?"End break":"Start break"}</button>
+ <button class="b p big" style="flex:1" ${S.pos&&!S.onBreak?"":"disabled"} onclick="clockOut()">Clock out</button></div>`}
+ if(S.msg)w+=`<div class="msg ${S.msg[0]}">${S.msg[1]}</div>`;
+ w+=`<div class="card" style="margin-top:12px"><h2>Forgot to clock out yesterday?</h2><div class="mut" style="margin-bottom:8px">28 Oct · clocked in 08:04, no clock out</div>
+ <div class="row"><input id="ct" type="time" style="width:130px"><input id="cr" placeholder="Reason" style="flex:1;min-width:160px"><button class="b" onclick="sendCorr()">Send request</button></div>
+ ${S.corr.filter(c=>c.w===ME).map(c=>`<div class="mut" style="margin-top:8px">Request for ${c.t}: <b>${c.st}</b></div>`).join("")}</div>
+ <div class="card"><h2>My recent days</h2><div class="sc"><table><tr><th>Date</th><th>In</th><th>Out</th><th>Brk</th><th>Flags</th></tr>
+ ${S.records.filter(r=>r.w===ME).map(r=>`<tr><td>${r.d}</td><td>${r.in}</td><td>${r.out||"–"}</td><td>${r.brk}</td><td>${r.flags.join(", ")}</td></tr>`).join("")}</table></div></div>`;
+ $("w").innerHTML=w;
+ const live=S.live.concat(S.cur?[{w:ME,st:S.onBreak?"On break":"On site",since:S.cur.in}]:[]);
+ const all=(S.cur?[S.cur]:[]).concat(S.records);
+ const pend=S.corr.filter(c=>c.st==="Pending");
+ $("a").innerHTML=`<div class="card"><h2>Who’s on site now (${live.length})</h2><div class="sc"><table><tr><th>Worker</th><th>Status</th><th>Since</th></tr>
+ ${live.map(l=>`<tr><td>${l.w}</td><td>${l.st}</td><td>${l.since}</td></tr>`).join("")}</table></div></div>
+ <div class="card"><h2>Review queue</h2>
+ ${pend.map(c=>`<div class="row sp" style="margin-bottom:8px"><div>${c.w}: clock out at <b>${c.t}</b> on ${c.d}<div class="mut">${c.r}</div></div><div class="row"><button class="b p" onclick="decide(${c.id},true)">Approve</button><button class="b" onclick="decide(${c.id},false)">Reject</button></div></div>`).join("")}
+ ${S.attempts.map(a=>`<div class="mut">⚠ ${a.w} · ${a.t} · ${a.k} (${a.d} m away)</div>`).join("")}
+ ${!pend.length&&!S.attempts.length?'<div class="mut">Nothing to review.</div>':""}</div>
+ <div class="card"><div class="row sp"><h2>Attendance</h2><button class="b" onclick="csv()">Export CSV</button></div>
+ <textarea id="csvbox" rows="6" hidden readonly></textarea>
+ <div class="sc"><table><tr><th>Worker</th><th>Date</th><th>In</th><th>Out</th><th>Brk</th><th>Flags</th></tr>
+ ${all.map(r=>`<tr><td>${r.w}</td><td>${r.d}</td><td>${r.in}</td><td>${r.out||"–"}</td><td>${r.brk}</td><td class="${r.flags.length?"warn":""}">${r.flags.join(", ")}</td></tr>`).join("")}</table></div></div>
+ <div class="card"><h2>Audit trail</h2>${S.audit.length?S.audit.map(x=>`<div class="mut">${x}</div>`).join(""):'<div class="mut">No changes yet.</div>'}</div>`}
+draw();
+</script>
+</body>
+</html>
